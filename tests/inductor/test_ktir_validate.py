@@ -215,6 +215,14 @@ RELAYOUT_CASES = {
         ([128, 4, 512, 64], [_C1, sympy.floor(_C2 / 64), _C0, sympy.Mod(_C2, 64)]),
         {_C0: 512, _C1: 128, _C2: 256},
     ),
+    # [128, 64, 128].transpose(1, 2).contiguous(): the output's single
+    # stick axis precedes c1, unlike the multi-stick 3D case above.
+    "3d_128x64x128": (
+        "ReStickifyOpHBM",
+        ([64, 2, 128, 64], [_C2, sympy.floor(_C1 / 64), _C0, sympy.Mod(_C1, 64)]),
+        ([1, 128, 128, 64], [sympy.floor(_C2 / 64), _C1, _C0, sympy.Mod(_C2, 64)]),
+        {_C0: 128, _C1: 128, _C2: 64},
+    ),
 }
 
 
@@ -2428,6 +2436,11 @@ class TestRelayout(unittest.TestCase):
             (32768, 1, 4194304, 64, 65536),
             (8388608, 131072, 32768, 64, 1),
         ),
+        "3d_128x64x128": (
+            (1, 2, 64, 128, 64),
+            (1048576, 8192, 1, 64, 16384),
+            (1048576, 524288, 8192, 64, 1),
+        ),
     }
 
     @staticmethod
@@ -2524,18 +2537,21 @@ class TestRelayout(unittest.TestCase):
             )
 
     def test_the_plan_step_is_an_identity_generic_over_a_strided_input(self):
-        plan = ktir.build_kernel_plan([make_relayout_op_spec("2d_128x256")])
-        [step] = plan.steps
-        extent, in_strides, out_strides = self.EXPECTED["2d_128x256"]
-        identity = tuple(range(len(extent)))
-        self.assertIs(step.surface, ktir.Surface.GENERIC)
-        self.assertEqual(step.indexing.maps, (identity, identity))
-        self.assertEqual(step.indexing.iters, (ktir.PARALLEL,) * len(extent))
-        [(_name, source)] = step.ins
-        self.assertEqual(source.extent, extent)
-        self.assertEqual(source.buffer.layout.strides, in_strides)
-        self.assertEqual(step.out.buffer.layout.strides, out_strides)
-        self.assertTrue(step.store)
+        """Each frontend layout reaches a copy plan with its derived strides."""
+        for case, (extent, in_strides, out_strides) in self.EXPECTED.items():
+            with self.subTest(case=case):
+                plan = ktir.build_kernel_plan([make_relayout_op_spec(case)])
+                [step] = plan.steps
+                identity = tuple(range(len(extent)))
+                self.assertIs(step.surface, ktir.Surface.GENERIC)
+                self.assertEqual(step.indexing.maps, (identity, identity))
+                self.assertEqual(step.indexing.iters, (ktir.PARALLEL,) * len(extent))
+                [(_name, source)] = step.ins
+                self.assertEqual(source.extent, extent)
+                self.assertEqual(source.buffer.layout.strides, in_strides)
+                self.assertEqual(step.out.extent, extent)
+                self.assertEqual(step.out.buffer.layout.strides, out_strides)
+                self.assertTrue(step.store)
 
     def test_refusals(self):
         refusals = {
